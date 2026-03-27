@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import json
 from dataclasses import dataclass
 from typing import Optional
 
@@ -15,6 +16,14 @@ class FFmpegNotFoundError(RuntimeError):
 class FFmpegBinaries:
     ffmpeg: str
     ffprobe: str
+
+
+@dataclass(frozen=True)
+class StreamInfo:
+    index: int
+    codec_type: str
+    language: str
+    title: str
 
 
 def resolve_binaries(
@@ -110,4 +119,36 @@ def build_subtitles_filter(input_path: str, stream_index: int) -> str:
     """
     safe = input_path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
     return f"subtitles=filename='{safe}':stream_index={stream_index}"
+
+
+def probe_streams(*, ffprobe_bin: str, input_file: str, timeout_s: float = 15.0) -> list[StreamInfo]:
+    """
+    Probe stream metadata for UI dropdown population.
+    Returns all streams with index/type/language/title where available.
+    """
+    cmd = [
+        ffprobe_bin,
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_entries",
+        "stream=index,codec_type:stream_tags=language,title",
+        input_file,
+    ]
+    try:
+        result = _run(cmd, timeout_s=timeout_s, check=False)
+        payload = json.loads(result.stdout or "{}")
+        raw_streams = payload.get("streams", [])
+        out: list[StreamInfo] = []
+        for s in raw_streams:
+            tags = s.get("tags", {}) or {}
+            idx = int(s.get("index"))
+            ctype = str(s.get("codec_type", "unknown"))
+            lang = str(tags.get("language", "unknown")).strip() or "unknown"
+            title = str(tags.get("title", "")).strip()
+            out.append(StreamInfo(index=idx, codec_type=ctype, language=lang, title=title))
+        return out
+    except Exception:
+        return []
 

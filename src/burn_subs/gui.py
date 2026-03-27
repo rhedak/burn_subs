@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from tkinter import filedialog, messagebox, ttk
 
 from .core import BurnOptions, ConvertResult, convert_files
+from .ffmpeg import probe_streams, resolve_binaries
 
 
 @dataclass(frozen=True)
@@ -25,9 +26,33 @@ class App(tk.Tk):
         self._files: list[str] = []
         self._worker: threading.Thread | None = None
         self._result_queue: queue.Queue[ConvertResult | None] = queue.Queue()
+        self._audio_choices: list[tuple[int, str]] = []
+        self._subtitle_choices: list[tuple[int, str]] = []
 
+        self._configure_theme()
         self._build_ui()
+        self._set_default_stream_dropdowns()
         self._poll_results()
+
+    def _configure_theme(self) -> None:
+        """
+        Force a readable ttk theme/colors.
+        Some Tk/macOS combinations can render white text on white buttons.
+        """
+        style = ttk.Style(self)
+        themes = set(style.theme_names())
+        if "clam" in themes:
+            style.theme_use("clam")
+
+        style.configure("TButton", padding=6, foreground="black", background="#f0f0f0")
+        style.configure("TLabel", foreground="black")
+        style.configure("TCheckbutton", foreground="black")
+        style.configure("TSpinbox", foreground="black")
+        style.map(
+            "TButton",
+            foreground=[("disabled", "#777777"), ("!disabled", "black")],
+            background=[("active", "#e6e6e6"), ("!disabled", "#f0f0f0")],
+        )
 
     def _build_ui(self) -> None:
         outer = ttk.Frame(self, padding=12)
@@ -38,6 +63,7 @@ class App(tk.Tk):
 
         ttk.Button(controls, text="Add files…", command=self._add_files).pack(side="left")
         ttk.Button(controls, text="Clear", command=self._clear_files).pack(side="left", padx=(8, 0))
+        ttk.Button(controls, text="Refresh streams", command=self._refresh_streams).pack(side="left", padx=(8, 0))
 
         ttk.Label(controls, text="Output dir:").pack(side="left", padx=(16, 4))
         self.output_dir_var = tk.StringVar(value="_out")
@@ -48,12 +74,14 @@ class App(tk.Tk):
         opts.pack(fill="x", pady=(12, 0))
 
         ttk.Label(opts, text="Audio index:").pack(side="left")
-        self.audio_index_var = tk.IntVar(value=0)
-        ttk.Spinbox(opts, from_=0, to=99, textvariable=self.audio_index_var, width=6).pack(side="left", padx=(6, 16))
+        self.audio_choice_var = tk.StringVar()
+        self.audio_combo = ttk.Combobox(opts, textvariable=self.audio_choice_var, width=24, state="readonly")
+        self.audio_combo.pack(side="left", padx=(6, 16))
 
         ttk.Label(opts, text="Subtitle index:").pack(side="left")
-        self.subtitle_index_var = tk.IntVar(value=0)
-        ttk.Spinbox(opts, from_=0, to=99, textvariable=self.subtitle_index_var, width=6).pack(side="left", padx=(6, 16))
+        self.subtitle_choice_var = tk.StringVar()
+        self.subtitle_combo = ttk.Combobox(opts, textvariable=self.subtitle_choice_var, width=28, state="readonly")
+        self.subtitle_combo.pack(side="left", padx=(6, 16))
 
         self.no_subs_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(opts, text="No subs (no-op)", variable=self.no_subs_var).pack(side="left")
@@ -96,18 +124,94 @@ class App(tk.Tk):
             if p not in self._files:
                 self._files.append(p)
                 self.tree.insert("", "end", values=("PENDING", p, "", ""))
+        if self._files:
+            self._load_stream_choices_from_first_file(self._files[0])
         self.progress_var.set(f"Selected files: {len(self._files)}")
 
     def _clear_files(self) -> None:
         self._files.clear()
         for item in self.tree.get_children():
             self.tree.delete(item)
+        self._set_default_stream_dropdowns()
         self.progress_var.set("Idle")
 
     def _choose_output_dir(self) -> None:
         d = filedialog.askdirectory(title="Select output directory")
         if d:
             self.output_dir_var.set(d)
+
+    def _refresh_streams(self) -> None:
+        if not self._files:
+            messagebox.showinfo("burn-subs", "Add at least one file to detect streams.")
+            return
+        self._load_stream_choices_from_first_file(self._files[0])
+        self.progress_var.set("Refreshed stream choices from first file")
+
+    def _set_default_stream_dropdowns(self) -> None:
+        self._audio_choices = [(0, "0 - unknown")]
+        self._subtitle_choices = [(0, "0 - unknown")]
+        self.audio_combo["values"] = [label for _, label in self._audio_choices]
+        self.subtitle_combo["values"] = [label for _, label in self._subtitle_choices]
+        self.audio_choice_var.set(self._audio_choices[0][1])
+        self.subtitle_choice_var.set(self._subtitle_choices[0][1])
+
+    def _load_stream_choices_from_first_file(self, first_file: str) -> None:
+        try:
+            bins = resolve_binaries()
+            streams = probe_streams(ffprobe_bin=bins.ffprobe, input_file=first_file)
+        except Exception:
+            streams = []
+
+        audio_choices: list[tuple[int, str]] = []
+        subtitle_choices: list[tuple[int, str]] = []
+
+        audio_seq = 0
+        sub_seq = 0
+        for s in streams:
+            lang = s.language if s.language else "unknown"
+            title = f" ({s.title})" if s.title else ""
+            if s.codec_type == "audio":
+                label = f"{audio_seq} - {lang}{title}"
+                audio_choices.append((audio_seq, label))
+                audio_seq += 1
+            elif s.codec_type == "subtitle":
+                label = f"{sub_seq} - {lang}{title}"
+                subtitle_choices.append((sub_seq, label))
+                sub_seq += 1
+
+        if not audio_choices:
+            audio_choices = [(0, "0 - unknown")]
+        if not subtitle_choices:
+            subtitle_choices = [(0, "0 - unknown")]
+
+        self._audio_choices = audio_choices
+        self._subtitle_choices = subtitle_choices
+        self.audio_combo["values"] = [label for _, label in audio_choices]
+        self.subtitle_combo["values"] = [label for _, label in subtitle_choices]
+        self.audio_choice_var.set(self._preferred_label(audio_choices, ("eng", "en", "jpn", "ja", "jp")))
+        self.subtitle_choice_var.set(self._preferred_label(subtitle_choices, ("eng", "en", "jpn", "ja", "jp")))
+
+    def _preferred_label(self, choices: list[tuple[int, str]], lang_priority: tuple[str, ...]) -> str:
+        for lang in lang_priority:
+            needle = f" - {lang.lower()}"
+            for _, label in choices:
+                if needle in label.lower():
+                    return label
+        return choices[0][1]
+
+    def _selected_audio_index(self) -> int:
+        label = self.audio_choice_var.get().strip()
+        for idx, lbl in self._audio_choices:
+            if lbl == label:
+                return idx
+        return 0
+
+    def _selected_subtitle_index(self) -> int:
+        label = self.subtitle_choice_var.get().strip()
+        for idx, lbl in self._subtitle_choices:
+            if lbl == label:
+                return idx
+        return 0
 
     def _run(self) -> None:
         if self._worker and self._worker.is_alive():
@@ -118,8 +222,8 @@ class App(tk.Tk):
             return
 
         options = BurnOptions(
-            subtitle_stream_index=None if self.no_subs_var.get() else int(self.subtitle_index_var.get()),
-            audio_index=int(self.audio_index_var.get()),
+            subtitle_stream_index=None if self.no_subs_var.get() else self._selected_subtitle_index(),
+            audio_index=self._selected_audio_index(),
             overwrite=bool(self.overwrite_var.get()),
         )
         job = _Job(files=list(self._files), output_dir=self.output_dir_var.get(), options=options)
