@@ -181,15 +181,27 @@ class App(tk.Tk):
 
         if not audio_choices:
             audio_choices = [(0, "0 - unknown")]
+        has_subs = bool(subtitle_choices)
         if not subtitle_choices:
-            subtitle_choices = [(0, "0 - unknown")]
+            subtitle_choices = [(0, "0 - (no subtitles detected)")]
 
         self._audio_choices = audio_choices
         self._subtitle_choices = subtitle_choices
         self.audio_combo["values"] = [label for _, label in audio_choices]
         self.subtitle_combo["values"] = [label for _, label in subtitle_choices]
-        self.audio_choice_var.set(self._preferred_label(audio_choices, ("eng", "en", "jpn", "ja", "jp")))
-        self.subtitle_choice_var.set(self._preferred_label(subtitle_choices, ("eng", "en", "jpn", "ja", "jp")))
+        # Auto-select: Japanese audio + English subs.
+        # Fallbacks:
+        # - audio: index 0 if JP not present
+        # - subs: EN if present else index 0; if no subs exist, enable "No subs".
+        self.audio_choice_var.set(self._preferred_label(audio_choices, ("jpn", "ja", "jp")))
+        if has_subs:
+            self.no_subs_var.set(False)
+            self.subtitle_combo.configure(state="readonly")
+            self.subtitle_choice_var.set(self._preferred_label(subtitle_choices, ("eng", "en")))
+        else:
+            self.no_subs_var.set(True)
+            self.subtitle_combo.configure(state="disabled")
+            self.subtitle_choice_var.set(subtitle_choices[0][1])
 
     def _preferred_label(self, choices: list[tuple[int, str]], lang_priority: tuple[str, ...]) -> str:
         for lang in lang_priority:
