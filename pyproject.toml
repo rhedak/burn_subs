@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "burn-subs"
+version = "0.1.0"
+description = "Burn subtitle streams into video using ffmpeg (CLI + Tkinter GUI)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Henrik" }]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/henrik/burn-subs"
+
+[project.scripts]
+burn-subs = "burn_subs.cli:main"
+burn-subs-gui = "burn_subs.gui:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
