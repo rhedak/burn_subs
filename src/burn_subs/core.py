@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Callable
 
 from .ffmpeg import FFmpegBinaries, build_subtitles_filter, get_subtitle_codec, resolve_binaries
 
@@ -31,8 +31,24 @@ class ConvertResult:
     error: Optional[str] = None
 
 
-def _run_ffmpeg(command: list[str]) -> None:
-    subprocess.run(command, check=True, capture_output=True, text=True)
+def _run_ffmpeg(command: list[str], log_callback: Optional[Callable[[str], None]] = None) -> None:
+    """Run ffmpeg and forward live output to the callback (for GUI)."""
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+    )
+
+    if log_callback and process.stdout:
+        for line in process.stdout:
+            log_callback(line)
+
+    return_code = process.wait()
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, command)
 
 
 def burn_subtitles(
@@ -41,24 +57,24 @@ def burn_subtitles(
     *,
     options: BurnOptions = BurnOptions(),
     binaries: Optional[FFmpegBinaries] = None,
+    log_callback: Optional[Callable[[str], None]] = None,
     log_fallback_errors: bool = True,
 ) -> ConvertResult:
     """
     Burn subtitles into video and transcode to MP4.
-
-    - If subtitle_stream_index is None, no conversion is performed (treated as a no-op).
-    - Subtitle method selection:
-      - PGS/bitmap: overlay
-      - Text: subtitles filter
-      - Unknown: try text first, then fall back to overlay
     """
+    if log_callback:
+        log_callback(f"Processing: {input_file}\n")
+        log_callback(f"Output: {output_file}\n")
+
     if options.subtitle_stream_index is None:
+        if log_callback:
+            log_callback("No subtitles selected → no-op\n")
         return ConvertResult(
             input_file=input_file,
             output_file=output_file,
             ok=True,
             method="none",
-            detected_codec=None,
         )
 
     bins = binaries or resolve_binaries()
@@ -67,17 +83,17 @@ def burn_subtitles(
     out_path = Path(output_file)
 
     if out_path.exists() and not options.overwrite:
+        if log_callback:
+            log_callback("Output file already exists → skipping (enable overwrite to replace)\n")
         return ConvertResult(
             input_file=input_file,
             output_file=output_file,
             ok=True,
             method="none",
-            detected_codec=None,
         )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Create a clean temp copy of the input filename (avoids escaping issues in the subtitles filter).
     base_dir = in_path.parent if str(in_path.parent) else Path(".")
     suffix = in_path.suffix
     clean_input: Optional[Path] = None
@@ -86,8 +102,10 @@ def burn_subtitles(
         with tempfile.NamedTemporaryFile(dir=base_dir, suffix=suffix, delete=False) as tmp:
             clean_input = Path(tmp.name)
 
-        # Copy rather than rename: safer and avoids altering the user's originals.
         clean_input.write_bytes(in_path.read_bytes())
+
+        if log_callback:
+            log_callback("Created temporary clean input file\n")
 
         codec = get_subtitle_codec(
             ffprobe_bin=bins.ffprobe,
@@ -97,133 +115,88 @@ def burn_subtitles(
         codec_lower = codec.lower()
         is_pgs = ("pgs" in codec_lower) or (codec_lower == "hdmv_pgs_subtitle")
 
+        if log_callback:
+            log_callback(f"Detected subtitle codec: {codec} {'(PGS)' if is_pgs else '(text)'}\n")
+
         base_command = [
             bins.ffmpeg,
             "-y" if options.overwrite else "-n",
-            "-probesize",
-            "100M",
-            "-analyzeduration",
-            "200M",
-            "-i",
-            os.fspath(clean_input),
-            "-map",
-            "0:v:0",
-            "-map",
-            f"0:a:{options.audio_index}",
+            "-probesize", "100M",
+            "-analyzeduration", "200M",
+            "-i", os.fspath(clean_input),
+            "-map", "0:v:0",
+            "-map", f"0:a:{options.audio_index}",
         ]
 
         encode_args = [
-            "-c:v",
-            options.video_codec,
-            "-q:v",
-            options.video_quality,
-            "-c:a",
-            options.audio_codec,
-            "-b:a",
-            options.audio_bitrate,
-            "-movflags",
-            "+faststart",
+            "-c:v", options.video_codec,
+            "-q:v", options.video_quality,
+            "-c:a", options.audio_codec,
+            "-b:a", options.audio_bitrate,
+            "-movflags", "+faststart",
             os.fspath(out_path),
         ]
 
-        def run_with(extra_args: list[str]) -> None:
-            _run_ffmpeg(base_command + extra_args + encode_args)
+        def run_with(extra_args: list[str], method_name: str) -> None:
+            full_command = base_command + extra_args + encode_args
+            if log_callback:
+                log_callback(f"\n--- Running ffmpeg ({method_name}) ---\n")
+                log_callback("$ " + " ".join(full_command) + "\n\n")
+            _run_ffmpeg(full_command, log_callback=log_callback)
 
         if is_pgs:
             run_with(
-                [
-                    "-filter_complex",
-                    f"[0:v:0][0:s:{options.subtitle_stream_index}]overlay[v]",
-                    "-map",
-                    "[v]",
-                ]
+                ["-filter_complex", f"[0:v:0][0:s:{options.subtitle_stream_index}]overlay[v]", "-map", "[v]"],
+                method_name="overlay (PGS)"
             )
-            return ConvertResult(
-                input_file=input_file,
-                output_file=output_file,
-                ok=True,
-                method="overlay",
-                detected_codec=codec,
-            )
+            if log_callback:
+                log_callback("Successfully burned PGS subtitles using overlay filter.\n")
+            return ConvertResult(input_file=input_file, output_file=output_file, ok=True, method="overlay", detected_codec=codec)
 
+        # Text subtitles
         if codec != "unknown":
             vf = build_subtitles_filter(os.fspath(clean_input), int(options.subtitle_stream_index))
-            run_with(["-vf", vf])
-            return ConvertResult(
-                input_file=input_file,
-                output_file=output_file,
-                ok=True,
-                method="text",
-                detected_codec=codec,
-            )
+            run_with(["-vf", vf], method_name="text subtitles filter")
+            if log_callback:
+                log_callback("Successfully burned text subtitles.\n")
+            return ConvertResult(input_file=input_file, output_file=output_file, ok=True, method="text", detected_codec=codec)
 
-        # Unknown: try text first, then fall back to overlay.
+        # Unknown codec fallback
+        if log_callback:
+            log_callback("Unknown subtitle codec. Trying text filter first...\n")
+
         vf = build_subtitles_filter(os.fspath(clean_input), int(options.subtitle_stream_index))
         try:
-            run_with(["-vf", vf])
-            return ConvertResult(
-                input_file=input_file,
-                output_file=output_file,
-                ok=True,
-                method="text",
-                detected_codec=codec,
-            )
-        except subprocess.CalledProcessError as text_err:
-            if log_fallback_errors:
-                try:
-                    log_file = base_dir / "subtitle_fallback_errors.log"
-                    text_stderr = (text_err.stderr or "").strip() or "(no stderr)"
-                    with log_file.open("a", encoding="utf-8") as fh:
-                        fh.write("\n" + "=" * 80 + "\n")
-                        fh.write(f"input={input_file}\n")
-                        fh.write(f"output={output_file}\n")
-                        fh.write(f"subtitle_stream_index={options.subtitle_stream_index}\n")
-                        fh.write(f"audio_index={options.audio_index}\n")
-                        fh.write(f"detected_codec={codec}\n")
-                        fh.write("first_attempt=text_subtitles_filter\n")
-                        fh.write("stderr:\n")
-                        fh.write(text_stderr + "\n")
-                except Exception:
-                    pass
-
+            run_with(["-vf", vf], method_name="text subtitles filter (fallback)")
+            if log_callback:
+                log_callback("Successfully burned using text filter.\n")
+            return ConvertResult(input_file=input_file, output_file=output_file, ok=True, method="text", detected_codec=codec)
+        except subprocess.CalledProcessError:
+            if log_callback:
+                log_callback("Text filter failed → falling back to overlay...\n")
             run_with(
-                [
-                    "-filter_complex",
-                    f"[0:v:0][0:s:{options.subtitle_stream_index}]overlay[v]",
-                    "-map",
-                    "[v]",
-                ]
+                ["-filter_complex", f"[0:v:0][0:s:{options.subtitle_stream_index}]overlay[v]", "-map", "[v]"],
+                method_name="overlay (fallback)"
             )
-            return ConvertResult(
-                input_file=input_file,
-                output_file=output_file,
-                ok=True,
-                method="overlay",
-                detected_codec=codec,
-            )
+            if log_callback:
+                log_callback("Successfully burned using overlay filter (fallback).\n")
+            return ConvertResult(input_file=input_file, output_file=output_file, ok=True, method="overlay", detected_codec=codec)
 
     except subprocess.CalledProcessError as e:
-        return ConvertResult(
-            input_file=input_file,
-            output_file=output_file,
-            ok=False,
-            method=None,
-            detected_codec=None,
-            error=(e.stderr or str(e)),
-        )
+        error_msg = e.stderr or str(e)
+        if log_callback:
+            log_callback(f"\nERROR: ffmpeg failed!\n{error_msg}\n")
+        return ConvertResult(input_file=input_file, output_file=output_file, ok=False, error=error_msg)
     except Exception as e:
-        return ConvertResult(
-            input_file=input_file,
-            output_file=output_file,
-            ok=False,
-            method=None,
-            detected_codec=None,
-            error=str(e),
-        )
+        if log_callback:
+            log_callback(f"\nUnexpected error: {e}\n")
+        return ConvertResult(input_file=input_file, output_file=output_file, ok=False, error=str(e))
     finally:
         if clean_input and clean_input.exists():
             try:
                 clean_input.unlink()
+                if log_callback:
+                    log_callback("Cleaned up temporary file.\n")
             except Exception:
                 pass
 
@@ -234,6 +207,7 @@ def convert_files(
     output_dir: str = "_out",
     options: BurnOptions = BurnOptions(),
     binaries: Optional[FFmpegBinaries] = None,
+    log_callback: Optional[Callable[[str], None]] = None,
 ) -> list[ConvertResult]:
     out_dir = Path(output_dir)
     results: list[ConvertResult] = []
@@ -246,7 +220,7 @@ def convert_files(
                 os.fspath(out_file),
                 options=options,
                 binaries=binaries,
+                log_callback=log_callback,
             )
         )
     return results
-

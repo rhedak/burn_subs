@@ -21,7 +21,7 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("burn-subs")
-        self.geometry("900x520")
+        self.geometry("1000x720")        # Slightly taller to give log more space
 
         self._files: list[str] = []
         self._worker: threading.Thread | None = None
@@ -31,14 +31,12 @@ class App(tk.Tk):
 
         self._configure_theme()
         self._build_ui()
+        self._configure_log_colors()          # ← Ensures readable log
         self._set_default_stream_dropdowns()
         self._poll_results()
 
     def _configure_theme(self) -> None:
-        """
-        Force a readable ttk theme/colors.
-        Some Tk/macOS combinations can render white text on white buttons.
-        """
+        """Force a readable ttk theme."""
         style = ttk.Style(self)
         themes = set(style.theme_names())
         if "clam" in themes:
@@ -54,10 +52,25 @@ class App(tk.Tk):
             background=[("active", "#e6e6e6"), ("!disabled", "#f0f0f0")],
         )
 
+    def _configure_log_colors(self) -> None:
+        """Make the log readable in both light and dark macOS modes."""
+        try:
+            self.log_text.configure(
+                background="#2d2d2d",      # Dark gray - good contrast
+                foreground="#e0e0e0",      # Light gray text
+                insertbackground="#ffffff",
+                selectbackground="#4a90e2",
+                selectforeground="#ffffff",
+            )
+        except Exception:
+            # Fallback for safety
+            self.log_text.configure(background="#f8f8f8", foreground="#000000")
+
     def _build_ui(self) -> None:
         outer = ttk.Frame(self, padding=12)
         outer.pack(fill="both", expand=True)
 
+        # === Top Controls ===
         controls = ttk.Frame(outer)
         controls.pack(fill="x")
 
@@ -67,9 +80,10 @@ class App(tk.Tk):
 
         ttk.Label(controls, text="Output dir:").pack(side="left", padx=(16, 4))
         self.output_dir_var = tk.StringVar(value="_out")
-        ttk.Entry(controls, textvariable=self.output_dir_var, width=28).pack(side="left")
+        ttk.Entry(controls, textvariable=self.output_dir_var, width=55).pack(side="left")
         ttk.Button(controls, text="Browse…", command=self._choose_output_dir).pack(side="left", padx=(6, 0))
 
+        # === Options ===
         opts = ttk.Frame(outer)
         opts.pack(fill="x", pady=(12, 0))
 
@@ -80,7 +94,7 @@ class App(tk.Tk):
 
         ttk.Label(opts, text="Subtitle index:").pack(side="left")
         self.subtitle_choice_var = tk.StringVar()
-        self.subtitle_combo = ttk.Combobox(opts, textvariable=self.subtitle_choice_var, width=28, state="readonly")
+        self.subtitle_combo = ttk.Combobox(opts, textvariable=self.subtitle_choice_var, width=32, state="readonly")
         self.subtitle_combo.pack(side="left", padx=(6, 16))
 
         self.no_subs_var = tk.BooleanVar(value=False)
@@ -89,6 +103,7 @@ class App(tk.Tk):
         self.overwrite_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(opts, text="Overwrite outputs", variable=self.overwrite_var).pack(side="left", padx=(12, 0))
 
+        # === Action Bar ===
         action = ttk.Frame(outer)
         action.pack(fill="x", pady=(12, 0))
 
@@ -98,17 +113,77 @@ class App(tk.Tk):
         self.progress_var = tk.StringVar(value="Idle")
         ttk.Label(action, textvariable=self.progress_var).pack(side="left", padx=(12, 0))
 
+        # === File List Table ===
         columns = ("status", "input", "output", "method")
-        self.tree = ttk.Treeview(outer, columns=columns, show="headings", height=16)
+        self.tree = ttk.Treeview(outer, columns=columns, show="headings", height=8)
         self.tree.heading("status", text="Status")
         self.tree.heading("input", text="Input")
         self.tree.heading("output", text="Output")
         self.tree.heading("method", text="Method")
         self.tree.column("status", width=80, anchor="w")
-        self.tree.column("input", width=360, anchor="w")
-        self.tree.column("output", width=360, anchor="w")
-        self.tree.column("method", width=80, anchor="w")
+        self.tree.column("input", width=380, anchor="w")
+        self.tree.column("output", width=380, anchor="w")
+        self.tree.column("method", width=90, anchor="w")
         self.tree.pack(fill="both", expand=True, pady=(12, 0))
+
+        # === Conversion Log Area ===
+        log_frame = ttk.LabelFrame(outer, text="Conversion Log (ffmpeg output)", padding=8)
+        log_frame.pack(fill="both", expand=True, pady=(12, 0))
+
+        self.log_text = tk.Text(
+            log_frame,
+            height=14,
+            wrap="word",
+            state="disabled",
+            font=("Consolas", 10) if tk.TkVersion >= 8.6 else ("TkFixedFont", 10),
+            relief="flat",
+            borderwidth=1
+        )
+        scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+
+        self.log_text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+    # ====================== Helper Methods ======================
+
+    def _set_smart_output_dir(self, first_file: str) -> None:
+        try:
+            import os
+            dir_of_first = os.path.dirname(os.path.abspath(first_file))
+            smart_output = os.path.join(dir_of_first, "_out")
+            self.output_dir_var.set(smart_output)
+            os.makedirs(smart_output, exist_ok=True)
+        except Exception:
+            self.output_dir_var.set("_out")
+
+    def _ensure_output_dir_exists(self, output_dir: str) -> bool:
+        try:
+            import os
+            os.makedirs(output_dir, exist_ok=True)
+            return True
+        except Exception as e:
+            messagebox.showerror(
+                "burn-subs",
+                f"Could not create output directory:\n{output_dir}\n\nError: {e}"
+            )
+            return False
+
+    def _clear_log(self) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", tk.END)
+        self.log_text.configure(state="disabled")
+
+    def _append_to_log(self, text: str) -> None:
+        def _update():
+            self.log_text.configure(state="normal")
+            self.log_text.insert(tk.END, text)
+            self.log_text.see(tk.END)
+            self.log_text.configure(state="disabled")
+            self.log_text.update_idletasks()
+        self.after(0, _update)
+
+    # ====================== File & Stream Handling ======================
 
     def _add_files(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -120,12 +195,16 @@ class App(tk.Tk):
         )
         if not paths:
             return
+
         for p in paths:
             if p not in self._files:
                 self._files.append(p)
                 self.tree.insert("", "end", values=("PENDING", p, "", ""))
+
         if self._files:
+            self._set_smart_output_dir(self._files[0])
             self._load_stream_choices_from_first_file(self._files[0])
+
         self.progress_var.set(f"Selected files: {len(self._files)}")
 
     def _clear_files(self) -> None:
@@ -133,6 +212,8 @@ class App(tk.Tk):
         for item in self.tree.get_children():
             self.tree.delete(item)
         self._set_default_stream_dropdowns()
+        self.output_dir_var.set("_out")
+        self._clear_log()
         self.progress_var.set("Idle")
 
     def _choose_output_dir(self) -> None:
@@ -189,10 +270,7 @@ class App(tk.Tk):
         self._subtitle_choices = subtitle_choices
         self.audio_combo["values"] = [label for _, label in audio_choices]
         self.subtitle_combo["values"] = [label for _, label in subtitle_choices]
-        # Auto-select: Japanese audio + English subs.
-        # Fallbacks:
-        # - audio: index 0 if JP not present
-        # - subs: EN if present else index 0; if no subs exist, enable "No subs".
+
         self.audio_choice_var.set(self._preferred_label(audio_choices, ("jpn", "ja", "jp")))
         if has_subs:
             self.no_subs_var.set(False)
@@ -225,6 +303,8 @@ class App(tk.Tk):
                 return idx
         return 0
 
+    # ====================== Run & Logging ======================
+
     def _run(self) -> None:
         if self._worker and self._worker.is_alive():
             messagebox.showinfo("burn-subs", "A conversion is already running.")
@@ -233,18 +313,29 @@ class App(tk.Tk):
             messagebox.showwarning("burn-subs", "Add at least one input file first.")
             return
 
+        output_dir = self.output_dir_var.get().strip()
+        if not output_dir:
+            output_dir = "_out"
+            self.output_dir_var.set(output_dir)
+
+        if not self._ensure_output_dir_exists(output_dir):
+            return
+
+        self._clear_log()
+        self._append_to_log("Starting conversion...\n\n")
+
         options = BurnOptions(
             subtitle_stream_index=None if self.no_subs_var.get() else self._selected_subtitle_index(),
             audio_index=self._selected_audio_index(),
             overwrite=bool(self.overwrite_var.get()),
         )
-        job = _Job(files=list(self._files), output_dir=self.output_dir_var.get(), options=options)
+        job = _Job(files=list(self._files), output_dir=output_dir, options=options)
 
         self.run_btn.configure(state="disabled")
-        self.progress_var.set("Running…")
+        self.progress_var.set("Running… (see log below)")
 
-        # Reset table outputs/methods to blank.
-        for i, item in enumerate(self.tree.get_children()):
+        # Reset table
+        for item in self.tree.get_children():
             vals = list(self.tree.item(item, "values"))
             vals[0] = "RUNNING"
             vals[2] = ""
@@ -255,16 +346,28 @@ class App(tk.Tk):
         self._worker.start()
 
     def _worker_run(self, job: _Job) -> None:
+        def log_cb(line: str):
+            self._append_to_log(line)
+
         try:
-            results = convert_files(job.files, output_dir=job.output_dir, options=job.options)
+            self._append_to_log(f"Output directory: {job.output_dir}\n")
+            self._append_to_log(f"Processing {len(job.files)} file(s)...\n\n")
+
+            results = convert_files(
+                job.files,
+                output_dir=job.output_dir,
+                options=job.options,
+                log_callback=log_cb
+            )
             for r in results:
                 self._result_queue.put(r)
+        except Exception as e:
+            self._append_to_log(f"\nUnexpected error: {e}\n")
         finally:
             self._result_queue.put(None)
 
     def _poll_results(self) -> None:
         done = False
-        updated = 0
         while True:
             try:
                 item = self._result_queue.get_nowait()
@@ -273,18 +376,17 @@ class App(tk.Tk):
             if item is None:
                 done = True
                 break
-            updated += 1
             self._apply_result(item)
 
         if done:
             self.run_btn.configure(state="normal")
             self.progress_var.set("Done")
+            self._append_to_log("\n=== Conversion finished ===\n")
             self._show_summary()
 
         self.after(150, self._poll_results)
 
     def _apply_result(self, r: ConvertResult) -> None:
-        # Update matching row by input path.
         for item in self.tree.get_children():
             vals = self.tree.item(item, "values")
             if vals and vals[1] == r.input_file:
@@ -312,4 +414,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
