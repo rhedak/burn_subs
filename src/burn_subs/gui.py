@@ -26,6 +26,7 @@ class App(tk.Tk):
         self._files: list[str] = []
         self._worker: threading.Thread | None = None
         self._result_queue: queue.Queue[ConvertResult | None] = queue.Queue()
+        self._log_queue: queue.Queue[str] = queue.Queue()
         self._audio_choices: list[tuple[int, str]] = []
         self._subtitle_choices: list[tuple[int, str]] = []
 
@@ -175,13 +176,17 @@ class App(tk.Tk):
         self.log_text.configure(state="disabled")
 
     def _append_to_log(self, text: str) -> None:
-        def _update():
-            self.log_text.configure(state="normal")
-            self.log_text.insert(tk.END, text)
-            self.log_text.see(tk.END)
-            self.log_text.configure(state="disabled")
-            self.log_text.update_idletasks()
-        self.after(0, _update)
+        self._log_queue.put(text)
+
+    def _flush_log_queue(self) -> None:
+        self.log_text.configure(state="normal")
+        try:
+            while True:
+                self.log_text.insert(tk.END, self._log_queue.get_nowait())
+        except queue.Empty:
+            pass
+        self.log_text.see(tk.END)
+        self.log_text.configure(state="disabled")
 
     # ====================== File & Stream Handling ======================
 
@@ -367,6 +372,8 @@ class App(tk.Tk):
             self._result_queue.put(None)
 
     def _poll_results(self) -> None:
+        self._flush_log_queue()
+
         done = False
         while True:
             try:
@@ -379,9 +386,11 @@ class App(tk.Tk):
             self._apply_result(item)
 
         if done:
+            self._flush_log_queue()
             self.run_btn.configure(state="normal")
             self.progress_var.set("Done")
             self._append_to_log("\n=== Conversion finished ===\n")
+            self._flush_log_queue()
             self._show_summary()
 
         self.after(150, self._poll_results)
