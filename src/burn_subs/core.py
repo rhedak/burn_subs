@@ -94,6 +94,7 @@ def burn_subtitles(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Temporary clean copy (kept for now - can be removed later)
     base_dir = in_path.parent if str(in_path.parent) else Path(".")
     suffix = in_path.suffix
     clean_input: Optional[Path] = None
@@ -118,14 +119,14 @@ def burn_subtitles(
         if log_callback:
             log_callback(f"Detected subtitle codec: {codec} {'(PGS)' if is_pgs else '(text)'}\n")
 
+        # FIXED: Do NOT map video here. Video will come from the filter instead.
         base_command = [
             bins.ffmpeg,
             "-y" if options.overwrite else "-n",
             "-probesize", "100M",
             "-analyzeduration", "200M",
             "-i", os.fspath(clean_input),
-            "-map", "0:v:0",
-            "-map", f"0:a:{options.audio_index}",
+            "-map", f"0:a:{options.audio_index}",   # Only map audio here
         ]
 
         encode_args = [
@@ -146,12 +147,21 @@ def burn_subtitles(
 
         if is_pgs:
             run_with(
-                ["-filter_complex", f"[0:v:0][0:s:{options.subtitle_stream_index}]overlay[v]", "-map", "[v]"],
+                [
+                    "-filter_complex", f"[0:v:0][0:s:{options.subtitle_stream_index}]overlay[v]",
+                    "-map", "[v]",                    # Map the filtered video
+                ],
                 method_name="overlay (PGS)"
             )
             if log_callback:
                 log_callback("Successfully burned PGS subtitles using overlay filter.\n")
-            return ConvertResult(input_file=input_file, output_file=output_file, ok=True, method="overlay", detected_codec=codec)
+            return ConvertResult(
+                input_file=input_file,
+                output_file=output_file,
+                ok=True,
+                method="overlay",
+                detected_codec=codec
+            )
 
         # Text subtitles
         if codec != "unknown":
@@ -159,7 +169,13 @@ def burn_subtitles(
             run_with(["-vf", vf], method_name="text subtitles filter")
             if log_callback:
                 log_callback("Successfully burned text subtitles.\n")
-            return ConvertResult(input_file=input_file, output_file=output_file, ok=True, method="text", detected_codec=codec)
+            return ConvertResult(
+                input_file=input_file,
+                output_file=output_file,
+                ok=True,
+                method="text",
+                detected_codec=codec
+            )
 
         # Unknown codec fallback
         if log_callback:
@@ -170,17 +186,32 @@ def burn_subtitles(
             run_with(["-vf", vf], method_name="text subtitles filter (fallback)")
             if log_callback:
                 log_callback("Successfully burned using text filter.\n")
-            return ConvertResult(input_file=input_file, output_file=output_file, ok=True, method="text", detected_codec=codec)
+            return ConvertResult(
+                input_file=input_file,
+                output_file=output_file,
+                ok=True,
+                method="text",
+                detected_codec=codec
+            )
         except subprocess.CalledProcessError:
             if log_callback:
                 log_callback("Text filter failed → falling back to overlay...\n")
             run_with(
-                ["-filter_complex", f"[0:v:0][0:s:{options.subtitle_stream_index}]overlay[v]", "-map", "[v]"],
+                [
+                    "-filter_complex", f"[0:v:0][0:s:{options.subtitle_stream_index}]overlay[v]",
+                    "-map", "[v]",
+                ],
                 method_name="overlay (fallback)"
             )
             if log_callback:
                 log_callback("Successfully burned using overlay filter (fallback).\n")
-            return ConvertResult(input_file=input_file, output_file=output_file, ok=True, method="overlay", detected_codec=codec)
+            return ConvertResult(
+                input_file=input_file,
+                output_file=output_file,
+                ok=True,
+                method="overlay",
+                detected_codec=codec
+            )
 
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr or str(e)
