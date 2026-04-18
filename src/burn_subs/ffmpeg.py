@@ -112,6 +112,16 @@ def get_subtitle_codec(
         return "unknown"
 
 
+def check_subtitles_filter(ffmpeg_bin: str) -> bool:
+    """Return True if this ffmpeg build includes the subtitles filter (requires libass)."""
+    try:
+        result = _run([ffmpeg_bin, "-filters"], timeout_s=10.0, check=False)
+        output = (result.stdout or "") + (result.stderr or "")
+        return "subtitles" in output
+    except Exception:
+        return False
+
+
 def build_subtitles_filter(input_path: str, stream_index: int) -> str:
     """
     Build an ffmpeg subtitles filter string.

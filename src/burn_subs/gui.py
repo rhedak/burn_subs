@@ -6,8 +6,14 @@ import tkinter as tk
 from dataclasses import dataclass
 from tkinter import filedialog, messagebox, ttk
 
+try:
+    from tkinterdnd2 import DND_FILES as _DND_FILES, TkinterDnD as _TkinterDnD
+    _HAS_TKINTERDND2 = True
+except Exception:
+    _HAS_TKINTERDND2 = False
+
 from .core import BurnOptions, ConvertResult, convert_files
-from .ffmpeg import probe_streams, resolve_binaries
+from .ffmpeg import check_subtitles_filter, probe_streams, resolve_binaries
 
 
 @dataclass(frozen=True)
@@ -23,6 +29,14 @@ class App(tk.Tk):
         self.title("burn-subs")
         self.geometry("1000x720")        # Slightly taller to give log more space
 
+        self._dnd_enabled = False
+        if _HAS_TKINTERDND2:
+            try:
+                _TkinterDnD._require(self)
+                self._dnd_enabled = True
+            except Exception:
+                pass
+
         self._files: list[str] = []
         self._worker: threading.Thread | None = None
         self._result_queue: queue.Queue[ConvertResult | None] = queue.Queue()
@@ -35,6 +49,7 @@ class App(tk.Tk):
         self._configure_log_colors()          # ← Ensures readable log
         self._set_default_stream_dropdowns()
         self._poll_results()
+        self.after(100, self._check_ffmpeg_capabilities)
 
     def _configure_theme(self) -> None:
         """Force a readable ttk theme."""
@@ -126,6 +141,9 @@ class App(tk.Tk):
         self.tree.column("output", width=380, anchor="w")
         self.tree.column("method", width=90, anchor="w")
         self.tree.pack(fill="both", expand=True, pady=(12, 0))
+        if self._dnd_enabled:
+            self.tree.drop_target_register(_DND_FILES)
+            self.tree.dnd_bind("<<Drop>>", self._on_drop)
 
         # === Conversion Log Area ===
         log_frame = ttk.LabelFrame(outer, text="Conversion Log (ffmpeg output)", padding=8)
@@ -189,6 +207,32 @@ class App(tk.Tk):
         self.log_text.configure(state="disabled")
 
     # ====================== File & Stream Handling ======================
+
+    def _check_ffmpeg_capabilities(self) -> None:
+        try:
+            bins = resolve_binaries()
+            if not check_subtitles_filter(bins.ffmpeg):
+                messagebox.showwarning(
+                    "burn-subs — missing libass",
+                    "ffmpeg is missing libass support.\n\n"
+                    "Text/ASS subtitles will not burn correctly.\n\n"
+                    "Fix:  brew install ffmpeg-full",
+                )
+        except Exception:
+            pass
+
+    def _on_drop(self, event: tk.Event) -> None:
+        paths = self.tk.splitlist(event.data)
+        video_extensions = {".mkv", ".mp4", ".mov", ".m4v", ".avi", ".ts"}
+        new_paths = [p for p in paths if p not in self._files and any(p.lower().endswith(ext) for ext in video_extensions)]
+        if not new_paths:
+            return
+        for p in new_paths:
+            self._files.append(p)
+            self.tree.insert("", "end", values=("PENDING", p, "", ""))
+        self._set_smart_output_dir(self._files[0])
+        self._load_stream_choices_from_first_file(self._files[0])
+        self.progress_var.set(f"Selected files: {len(self._files)}")
 
     def _add_files(self) -> None:
         paths = filedialog.askopenfilenames(

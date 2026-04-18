@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Callable
 
-from .ffmpeg import FFmpegBinaries, build_subtitles_filter, get_subtitle_codec, resolve_binaries
+from .ffmpeg import FFmpegBinaries, build_subtitles_filter, check_subtitles_filter, get_subtitle_codec, resolve_binaries
 
 
 @dataclass(frozen=True)
@@ -164,6 +164,16 @@ def burn_subtitles(
 
         # ==================== TEXT SUBTITLES ====================
         if codec != "unknown":
+            if not check_subtitles_filter(bins.ffmpeg):
+                return ConvertResult(
+                    input_file=input_file,
+                    output_file=output_file,
+                    ok=False,
+                    error=(
+                        "ffmpeg is missing libass — text subtitles require the 'subtitles' filter.\n"
+                        "Fix: brew install ffmpeg-full"
+                    ),
+                )
             vf = build_subtitles_filter(os.fspath(clean_input), int(options.subtitle_stream_index))
             run_with(["-vf", vf], method_name="text subtitles filter")
             if log_callback:

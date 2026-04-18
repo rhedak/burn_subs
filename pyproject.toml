@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Henrik" }]
-dependencies = []
+dependencies = ["tkinterdnd2"]
 
 [project.urls]
 Repository = "https://github.com/henrik/burn-subs"
