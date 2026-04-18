@@ -5,11 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Install locally (editable)
-pip install -e .
+# Create venv and install locally (editable)
+uv venv && uv pip install -e .
 
 # Run all tests
-pytest
+uv run pytest
 
 # Run a single test
 pytest tests/test_ffmpeg_helpers.py::test_build_subtitles_filter_escapes_basic_chars
@@ -23,6 +23,10 @@ burn-subs-gui
 ```
 
 No linter is configured. No build step is required for development.
+
+## Requirements
+
+- `ffmpeg` and `ffprobe` on `PATH`, compiled with libass (required for the `subtitles` filter). On macOS: `brew install ffmpeg-full` (the standard `ffmpeg` bottle omits libass).
 
 ## Architecture
 
