@@ -9,13 +9,15 @@ Includes:
 ## Requirements
 
 - Python **3.10+**
-- `ffmpeg` and `ffprobe` available on your `PATH`
-  - macOS (Homebrew): `brew install ffmpeg`
+- `ffmpeg` and `ffprobe` available on your `PATH`, compiled with **libass** (required for burning text/ASS subtitles)
+  - macOS (Homebrew): `brew install ffmpeg-full` *(the standard `ffmpeg` bottle omits libass)*
 
 ## Install (local)
 
 ```bash
-pip install .
+uv venv  # first time only
+source .venv/bin/activate
+uv pip install -e .
 ```
 
 ## CLI usage

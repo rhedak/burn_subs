@@ -124,15 +124,14 @@ def build_subtitles_filter(input_path: str, stream_index: int) -> str:
 def probe_streams(*, ffprobe_bin: str, input_file: str, timeout_s: float = 30.0) -> list[StreamInfo]:
     """
     Probe stream metadata for UI dropdown population.
-    Increased probing for reliable subtitle detection in MKV files.
     """
     cmd = [
         ffprobe_bin,
         "-v", "quiet",
-        "-probesize", "2000M",           # Much larger
-        "-analyzeduration", "2000M",     # Much larger
+        "-probesize", "100M",
+        "-analyzeduration", "100M",
         "-print_format", "json",
-        "-show_entries", "stream=index,codec_type:stream_tags=language,title",
+        "-show_streams",
         input_file,
     ]
     try:
