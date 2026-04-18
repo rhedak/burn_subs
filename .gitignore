@@ -228,3 +228,5 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+/.autoenv.zsh
+/test.mkv

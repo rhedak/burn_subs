@@ -16,7 +16,7 @@ class BurnOptions:
     audio_index: int = 0
     overwrite: bool = False
     video_codec: str = "mpeg4"
-    video_quality: str = "3"  # ffmpeg -q:v value
+    video_quality: str = "3"
     audio_codec: str = "aac"
     audio_bitrate: str = "160k"
 
@@ -26,13 +26,12 @@ class ConvertResult:
     input_file: str
     output_file: str
     ok: bool
-    method: Optional[str] = None  # "text", "overlay", "none"
+    method: Optional[str] = None
     detected_codec: Optional[str] = None
     error: Optional[str] = None
 
 
 def _run_ffmpeg(command: list[str], log_callback: Optional[Callable[[str], None]] = None) -> None:
-    """Run ffmpeg and forward live output to the callback (for GUI)."""
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -58,7 +57,6 @@ def burn_subtitles(
     options: BurnOptions = BurnOptions(),
     binaries: Optional[FFmpegBinaries] = None,
     log_callback: Optional[Callable[[str], None]] = None,
-    log_fallback_errors: bool = True,
 ) -> ConvertResult:
     """
     Burn subtitles into video and transcode to MP4.
@@ -84,7 +82,7 @@ def burn_subtitles(
 
     if out_path.exists() and not options.overwrite:
         if log_callback:
-            log_callback("Output file already exists → skipping (enable overwrite to replace)\n")
+            log_callback("Output file already exists → skipping\n")
         return ConvertResult(
             input_file=input_file,
             output_file=output_file,
@@ -94,7 +92,6 @@ def burn_subtitles(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Temporary clean copy (kept for now - can be removed later)
     base_dir = in_path.parent if str(in_path.parent) else Path(".")
     suffix = in_path.suffix
     clean_input: Optional[Path] = None
@@ -102,7 +99,6 @@ def burn_subtitles(
     try:
         with tempfile.NamedTemporaryFile(dir=base_dir, suffix=suffix, delete=False) as tmp:
             clean_input = Path(tmp.name)
-
         clean_input.write_bytes(in_path.read_bytes())
 
         if log_callback:
@@ -119,14 +115,16 @@ def burn_subtitles(
         if log_callback:
             log_callback(f"Detected subtitle codec: {codec} {'(PGS)' if is_pgs else '(text)'}\n")
 
-        # FIXED: Do NOT map video here. Video will come from the filter instead.
+        # ==================== FIXED BASE COMMAND ====================
+        # We now map BOTH video and audio here, then override video mapping when using filters
         base_command = [
             bins.ffmpeg,
             "-y" if options.overwrite else "-n",
             "-probesize", "100M",
             "-analyzeduration", "200M",
             "-i", os.fspath(clean_input),
-            "-map", f"0:a:{options.audio_index}",   # Only map audio here
+            "-map", "0:v:0",                                   # Map video (will be overridden for filters)
+            "-map", f"0:a:{options.audio_index}",              # Map selected audio
         ]
 
         encode_args = [
@@ -145,11 +143,12 @@ def burn_subtitles(
                 log_callback("$ " + " ".join(full_command) + "\n\n")
             _run_ffmpeg(full_command, log_callback=log_callback)
 
+        # ==================== PGS SUBTITLES ====================
         if is_pgs:
             run_with(
                 [
                     "-filter_complex", f"[0:v:0][0:s:{options.subtitle_stream_index}]overlay[v]",
-                    "-map", "[v]",                    # Map the filtered video
+                    "-map", "[v]",                                 # Use the filtered video instead
                 ],
                 method_name="overlay (PGS)"
             )
@@ -163,7 +162,7 @@ def burn_subtitles(
                 detected_codec=codec
             )
 
-        # Text subtitles
+        # ==================== TEXT SUBTITLES ====================
         if codec != "unknown":
             vf = build_subtitles_filter(os.fspath(clean_input), int(options.subtitle_stream_index))
             run_with(["-vf", vf], method_name="text subtitles filter")

@@ -121,34 +121,45 @@ def build_subtitles_filter(input_path: str, stream_index: int) -> str:
     return f"subtitles=filename='{safe}':stream_index={stream_index}"
 
 
-def probe_streams(*, ffprobe_bin: str, input_file: str, timeout_s: float = 15.0) -> list[StreamInfo]:
+def probe_streams(*, ffprobe_bin: str, input_file: str, timeout_s: float = 30.0) -> list[StreamInfo]:
     """
     Probe stream metadata for UI dropdown population.
-    Returns all streams with index/type/language/title where available.
+    Increased probing for reliable subtitle detection in MKV files.
     """
     cmd = [
         ffprobe_bin,
-        "-v",
-        "quiet",
-        "-print_format",
-        "json",
-        "-show_entries",
-        "stream=index,codec_type:stream_tags=language,title",
+        "-v", "quiet",
+        "-probesize", "2000M",           # Much larger
+        "-analyzeduration", "2000M",     # Much larger
+        "-print_format", "json",
+        "-show_entries", "stream=index,codec_type:stream_tags=language,title",
         input_file,
     ]
     try:
         result = _run(cmd, timeout_s=timeout_s, check=False)
+        if result.returncode != 0:
+            print(f"ffprobe returned error code {result.returncode}")
+            return []
+
         payload = json.loads(result.stdout or "{}")
         raw_streams = payload.get("streams", [])
         out: list[StreamInfo] = []
+
         for s in raw_streams:
             tags = s.get("tags", {}) or {}
-            idx = int(s.get("index"))
-            ctype = str(s.get("codec_type", "unknown"))
-            lang = str(tags.get("language", "unknown")).strip() or "unknown"
-            title = str(tags.get("title", "")).strip()
-            out.append(StreamInfo(index=idx, codec_type=ctype, language=lang, title=title))
+            try:
+                idx = int(s.get("index", -1))
+                if idx < 0:
+                    continue
+                ctype = str(s.get("codec_type", "unknown"))
+                lang = str(tags.get("language", "unknown")).strip() or "unknown"
+                title = str(tags.get("title", "")).strip()
+                out.append(StreamInfo(index=idx, codec_type=ctype, language=lang, title=title))
+            except Exception:
+                continue
+
         return out
-    except Exception:
+    except Exception as e:
+        print(f"Probe error: {e}")
         return []
 
