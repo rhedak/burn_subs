@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--subtitle-index", type=int, default=0, help="Subtitle stream index (default: %(default)s)")
     p.add_argument("--no-subs", action="store_true", help="Do not burn subtitles (no-op conversion)")
     p.add_argument("--overwrite", action="store_true", help="Overwrite output files if they exist")
+    p.add_argument("--height", type=int, default=None, metavar="PX",
+                   help="Scale output to this height in pixels (e.g. 720 for 720p). Width is set automatically to preserve aspect ratio. Default: keep original resolution.")
     return p
 
 
@@ -50,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         subtitle_stream_index=None if args.no_subs else args.subtitle_index,
         audio_index=args.audio_index,
         overwrite=args.overwrite,
+        target_height=args.height,
     )
 
     results = convert_files(files, output_dir=args.output_dir, options=options)

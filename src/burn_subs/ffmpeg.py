@@ -147,7 +147,6 @@ def probe_streams(*, ffprobe_bin: str, input_file: str, timeout_s: float = 30.0)
     try:
         result = _run(cmd, timeout_s=timeout_s, check=False)
         if result.returncode != 0:
-            print(f"ffprobe returned error code {result.returncode}")
             return []
 
         payload = json.loads(result.stdout or "{}")
@@ -168,7 +167,6 @@ def probe_streams(*, ffprobe_bin: str, input_file: str, timeout_s: float = 30.0)
                 continue
 
         return out
-    except Exception as e:
-        print(f"Probe error: {e}")
+    except Exception:
         return []
 

@@ -99,25 +99,46 @@ class App(tk.Tk):
         ttk.Entry(controls, textvariable=self.output_dir_var, width=55).pack(side="left")
         ttk.Button(controls, text="Browse…", command=self._choose_output_dir).pack(side="left", padx=(6, 0))
 
-        # === Options ===
-        opts = ttk.Frame(outer)
-        opts.pack(fill="x", pady=(12, 0))
+        # === Options row 1: stream selection ===
+        opts1 = ttk.Frame(outer)
+        opts1.pack(fill="x", pady=(12, 0))
 
-        ttk.Label(opts, text="Audio index:").pack(side="left")
+        ttk.Label(opts1, text="Audio index:").pack(side="left")
         self.audio_choice_var = tk.StringVar()
-        self.audio_combo = ttk.Combobox(opts, textvariable=self.audio_choice_var, width=24, state="readonly")
+        self.audio_combo = ttk.Combobox(opts1, textvariable=self.audio_choice_var, width=24, state="readonly")
         self.audio_combo.pack(side="left", padx=(6, 16))
 
-        ttk.Label(opts, text="Subtitle index:").pack(side="left")
+        ttk.Label(opts1, text="Subtitle index:").pack(side="left")
         self.subtitle_choice_var = tk.StringVar()
-        self.subtitle_combo = ttk.Combobox(opts, textvariable=self.subtitle_choice_var, width=32, state="readonly")
+        self.subtitle_combo = ttk.Combobox(opts1, textvariable=self.subtitle_choice_var, width=32, state="readonly")
         self.subtitle_combo.pack(side="left", padx=(6, 16))
 
+        # === Options row 2: flags and encoding ===
+        opts2 = ttk.Frame(outer)
+        opts2.pack(fill="x", pady=(6, 0))
+
         self.no_subs_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opts, text="No subs (no-op)", variable=self.no_subs_var).pack(side="left")
+        ttk.Checkbutton(opts2, text="No subs (no-op)", variable=self.no_subs_var).pack(side="left")
 
         self.overwrite_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opts, text="Overwrite outputs", variable=self.overwrite_var).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(opts2, text="Overwrite outputs", variable=self.overwrite_var).pack(side="left", padx=(12, 0))
+
+        ttk.Label(opts2, text="Resolution:").pack(side="left", padx=(16, 4))
+        self._resolution_options: list[tuple[str, int | None]] = [
+            ("Original", None),
+            ("1080p", 1080),
+            ("720p", 720),
+            ("480p", 480),
+            ("360p", 360),
+        ]
+        self.resolution_var = tk.StringVar(value="Original")
+        ttk.Combobox(
+            opts2,
+            textvariable=self.resolution_var,
+            values=[label for label, _ in self._resolution_options],
+            width=10,
+            state="readonly",
+        ).pack(side="left")
 
         # === Action Bar ===
         action = ttk.Frame(outer)
@@ -352,6 +373,13 @@ class App(tk.Tk):
                 return idx
         return 0
 
+    def _selected_target_height(self) -> int | None:
+        label = self.resolution_var.get()
+        for lbl, height in self._resolution_options:
+            if lbl == label:
+                return height
+        return None
+
     # ====================== Run & Logging ======================
 
     def _run(self) -> None:
@@ -377,6 +405,7 @@ class App(tk.Tk):
             subtitle_stream_index=None if self.no_subs_var.get() else self._selected_subtitle_index(),
             audio_index=self._selected_audio_index(),
             overwrite=bool(self.overwrite_var.get()),
+            target_height=self._selected_target_height(),
         )
         job = _Job(files=list(self._files), output_dir=output_dir, options=options)
 
