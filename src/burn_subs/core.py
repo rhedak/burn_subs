@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Optional, Callable
 
@@ -13,6 +13,7 @@ from .ffmpeg import FFmpegBinaries, build_subtitles_filter, check_subtitles_filt
 @dataclass(frozen=True)
 class BurnOptions:
     subtitle_stream_index: Optional[int] = 0
+    external_subtitle_file: Optional[str] = None
     audio_index: int = 0
     overwrite: bool = False
     video_codec: str = "mpeg4"
@@ -69,15 +70,19 @@ def burn_subtitles(
         log_callback(f"Processing: {input_file}\n")
         log_callback(f"Output: {output_file}\n")
 
-    if options.subtitle_stream_index is None and options.target_height is None:
+    if options.subtitle_stream_index is None and options.target_height is None and not options.external_subtitle_file:
+        in_ext = Path(input_file).suffix.lower()
+        if in_ext == ".mp4":
+            if log_callback:
+                log_callback("Input is already MP4, no subtitles, no resize → no-op\n")
+            return ConvertResult(
+                input_file=input_file,
+                output_file=output_file,
+                ok=True,
+                method="none",
+            )
         if log_callback:
-            log_callback("No subtitles selected, no resize → no-op\n")
-        return ConvertResult(
-            input_file=input_file,
-            output_file=output_file,
-            ok=True,
-            method="none",
-        )
+            log_callback("Input is not MP4 — will transcode without subtitles.\n")
 
     bins = binaries or resolve_binaries()
 
@@ -99,11 +104,26 @@ def burn_subtitles(
     base_dir = in_path.parent
     suffix = in_path.suffix
     clean_input: Optional[Path] = None
+    clean_subtitle: Optional[Path] = None
 
     try:
         with tempfile.NamedTemporaryFile(dir=base_dir, suffix=suffix, delete=False) as tmp:
             clean_input = Path(tmp.name)
         clean_input.write_bytes(in_path.read_bytes())
+
+        if options.external_subtitle_file:
+            sub_path = Path(options.external_subtitle_file)
+            if not sub_path.exists():
+                return ConvertResult(
+                    input_file=input_file,
+                    output_file=output_file,
+                    ok=False,
+                    error=f"External subtitle file not found: {sub_path}",
+                )
+            sub_suffix = sub_path.suffix or ".sub"
+            with tempfile.NamedTemporaryFile(dir=base_dir, suffix=sub_suffix, delete=False) as tmp:
+                clean_subtitle = Path(tmp.name)
+            clean_subtitle.write_bytes(sub_path.read_bytes())
 
         if log_callback:
             log_callback("Created temporary clean input file\n")
@@ -135,27 +155,122 @@ def burn_subtitles(
                 log_callback("$ " + " ".join(full_command) + "\n\n")
             _run_ffmpeg(full_command, log_callback=log_callback)
 
-        def overlay_args(sub_idx: int) -> list[str]:
+        def overlay_args(sub_idx: int, *, external: bool = False) -> list[str]:
+            sub_ref = f"[1:s:0]" if external else f"[0:s:{sub_idx}]"
             if scale_filter:
-                fc = f"[0:v:0][0:s:{sub_idx}]overlay[ov];[ov]{scale_filter}[v]"
+                fc = f"[0:v:0]{sub_ref}overlay[ov];[ov]{scale_filter}[v]"
             else:
-                fc = f"[0:v:0][0:s:{sub_idx}]overlay[v]"
+                fc = f"[0:v:0]{sub_ref}overlay[v]"
             return ["-filter_complex", fc, "-map", "[v]"] + audio_map
 
         def text_args(vf: str) -> list[str]:
             combined = f"{vf},{scale_filter}" if scale_filter else vf
             return ["-map", "0:v:0"] + audio_map + ["-vf", combined]
 
-        # No-subtitle path: only reached when target_height is set
-        if options.subtitle_stream_index is None:
-            run_with(["-map", "0:v:0"] + audio_map + ["-vf", scale_filter], method_name="scale only")
+        # === External subtitle file ===
+        if options.external_subtitle_file:
+            sub_ext = clean_subtitle.suffix.lower()
             if log_callback:
-                log_callback("Successfully rescaled video.\n")
+                log_callback(f"External subtitle file: {options.external_subtitle_file} ({sub_ext})\n")
+
+            if sub_ext in {".sup", ".idx"}:
+                if log_callback:
+                    log_callback("Using overlay filter for bitmap subtitle.\n")
+                run_with(
+                    ["-i", os.fspath(clean_subtitle)] + overlay_args(0, external=True),
+                    method_name="overlay (external)",
+                )
+                if log_callback:
+                    log_callback("Successfully burned external bitmap subtitles.\n")
+                return ConvertResult(
+                    input_file=input_file,
+                    output_file=output_file,
+                    ok=True,
+                    method="overlay",
+                    detected_codec="pgs",
+                )
+
+            if sub_ext in {".srt", ".ass", ".ssa", ".vtt", ".txt"}:
+                if not check_subtitles_filter(bins.ffmpeg):
+                    return ConvertResult(
+                        input_file=input_file,
+                        output_file=output_file,
+                        ok=False,
+                        error=(
+                            "ffmpeg is missing libass — text subtitles require the 'subtitles' filter.\n"
+                            "Fix: brew install ffmpeg-full"
+                        ),
+                    )
+                vf = build_subtitles_filter(os.fspath(clean_subtitle), 0)
+                run_with(text_args(vf), method_name="text (external)")
+                if log_callback:
+                    log_callback("Successfully burned external text subtitles.\n")
+                return ConvertResult(
+                    input_file=input_file,
+                    output_file=output_file,
+                    ok=True,
+                    method="text",
+                    detected_codec="text",
+                )
+
+            # Unknown extension — try text, fallback to overlay
+            if log_callback:
+                log_callback("Unknown subtitle format. Trying text filter first...\n")
+            if not check_subtitles_filter(bins.ffmpeg):
+                return ConvertResult(
+                    input_file=input_file,
+                    output_file=output_file,
+                    ok=False,
+                    error=(
+                        "ffmpeg is missing libass — text subtitles require the 'subtitles' filter.\n"
+                        "Fix: brew install ffmpeg-full"
+                    ),
+                )
+            vf = build_subtitles_filter(os.fspath(clean_subtitle), 0)
+            try:
+                run_with(text_args(vf), method_name="text (external, fallback)")
+                if log_callback:
+                    log_callback("Successfully burned using text filter.\n")
+                return ConvertResult(
+                    input_file=input_file,
+                    output_file=output_file,
+                    ok=True,
+                    method="text",
+                    detected_codec="text",
+                )
+            except subprocess.CalledProcessError:
+                if log_callback:
+                    log_callback("Text filter failed → falling back to overlay...\n")
+                run_with(
+                    ["-i", os.fspath(clean_subtitle)] + overlay_args(0, external=True),
+                    method_name="overlay (external, fallback)",
+                )
+                if log_callback:
+                    log_callback("Successfully burned using overlay filter (fallback).\n")
+                return ConvertResult(
+                    input_file=input_file,
+                    output_file=output_file,
+                    ok=True,
+                    method="overlay",
+                    detected_codec="pgs",
+                )
+
+        # No-subtitle path: transcode (with optional scale) when no subtitles needed
+        if options.subtitle_stream_index is None:
+            if scale_filter:
+                extra = ["-vf", scale_filter]
+                method = "scale"
+            else:
+                extra = []
+                method = "transcode"
+            run_with(["-map", "0:v:0"] + audio_map + extra, method_name=method)
+            if log_callback:
+                log_callback(f"Successfully {'rescaled' if scale_filter else 'transcoded'} video.\n")
             return ConvertResult(
                 input_file=input_file,
                 output_file=output_file,
                 ok=True,
-                method="scale",
+                method=method,
             )
 
         codec = get_subtitle_codec(
@@ -251,6 +366,11 @@ def burn_subtitles(
                     log_callback("Cleaned up temporary file.\n")
             except Exception:
                 pass
+        if clean_subtitle and clean_subtitle.exists():
+            try:
+                clean_subtitle.unlink()
+            except Exception:
+                pass
 
 
 def convert_files(
@@ -260,17 +380,21 @@ def convert_files(
     options: BurnOptions = BurnOptions(),
     binaries: Optional[FFmpegBinaries] = None,
     log_callback: Optional[Callable[[str], None]] = None,
+    external_subs: Optional[dict[str, str | None]] = None,
 ) -> list[ConvertResult]:
     out_dir = Path(output_dir)
     results: list[ConvertResult] = []
     for f in files:
         in_path = Path(f)
         out_file = out_dir / (in_path.stem + ".mp4")
+        file_options = options
+        if external_subs and f in external_subs:
+            file_options = replace(options, external_subtitle_file=external_subs[f])
         results.append(
             burn_subtitles(
                 os.fspath(in_path),
                 os.fspath(out_file),
-                options=options,
+                options=file_options,
                 binaries=binaries,
                 log_callback=log_callback,
             )

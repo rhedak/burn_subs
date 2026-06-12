@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import tkinter as tk
+from pathlib import Path
 from dataclasses import dataclass
 from tkinter import filedialog, messagebox, ttk
 
@@ -21,6 +23,7 @@ class _Job:
     files: list[str]
     output_dir: str
     options: BurnOptions
+    external_subs: dict[str, str | None] | None = None
 
 
 class App(tk.Tk):
@@ -43,6 +46,7 @@ class App(tk.Tk):
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._audio_choices: list[tuple[int, str]] = []
         self._subtitle_choices: list[tuple[int, str]] = []
+        self._external_subs: dict[str, str | None] = {}
 
         self._configure_theme()
         self._build_ui()
@@ -140,6 +144,34 @@ class App(tk.Tk):
             state="readonly",
         ).pack(side="left")
 
+        # === External subtitle file ===
+        opts3 = ttk.Frame(outer)
+        opts3.pack(fill="x", pady=(6, 0))
+
+        self.external_subs_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            opts3,
+            text="External subs",
+            variable=self.external_subs_var,
+            command=self._on_external_subs_toggle,
+        ).pack(side="left")
+
+        self.subs_browse_btn = ttk.Button(
+            opts3,
+            text="Browse…",
+            command=self._choose_external_sub,
+            state="disabled",
+        )
+        self.subs_browse_btn.pack(side="left", padx=(8, 0))
+
+        self.subs_clear_btn = ttk.Button(
+            opts3,
+            text="Clear",
+            command=self._clear_external_sub,
+            state="disabled",
+        )
+        self.subs_clear_btn.pack(side="left", padx=(4, 0))
+
         # === Action Bar ===
         action = ttk.Frame(outer)
         action.pack(fill="x", pady=(12, 0))
@@ -151,16 +183,18 @@ class App(tk.Tk):
         ttk.Label(action, textvariable=self.progress_var).pack(side="left", padx=(12, 0))
 
         # === File List Table ===
-        columns = ("status", "input", "output", "method")
+        columns = ("status", "input", "output", "method", "sub")
         self.tree = ttk.Treeview(outer, columns=columns, show="headings", height=8)
         self.tree.heading("status", text="Status")
         self.tree.heading("input", text="Input")
         self.tree.heading("output", text="Output")
         self.tree.heading("method", text="Method")
+        self.tree.heading("sub", text="Sub File")
         self.tree.column("status", width=80, anchor="w")
-        self.tree.column("input", width=380, anchor="w")
-        self.tree.column("output", width=380, anchor="w")
+        self.tree.column("input", width=350, anchor="w")
+        self.tree.column("output", width=350, anchor="w")
         self.tree.column("method", width=90, anchor="w")
+        self.tree.column("sub", width=0, minwidth=0, stretch=False)
         self.tree.pack(fill="both", expand=True, pady=(12, 0))
         if self._dnd_enabled:
             self.tree.drop_target_register(_DND_FILES)
@@ -227,6 +261,94 @@ class App(tk.Tk):
         self.log_text.see(tk.END)
         self.log_text.configure(state="disabled")
 
+    # ====================== External Subtitle File Handling ======================
+
+    def _on_external_subs_toggle(self) -> None:
+        if self.external_subs_var.get():
+            self._auto_match_all()
+            self.tree.column("sub", width=200, minwidth=50, stretch=True)
+            self.subs_browse_btn.configure(state="normal")
+            self.subs_clear_btn.configure(state="normal")
+        else:
+            self._external_subs.clear()
+            self.tree.column("sub", width=0, minwidth=0, stretch=False)
+            self.subs_browse_btn.configure(state="disabled")
+            self.subs_clear_btn.configure(state="disabled")
+        self._update_tree_sub_columns()
+
+    def _update_tree_sub_columns(self) -> None:
+        enabled = self.external_subs_var.get()
+        for item in self.tree.get_children():
+            vals = list(self.tree.item(item, "values"))
+            if len(vals) < 5:
+                continue
+            video_path = vals[1]
+            if enabled:
+                sub_path = self._external_subs.get(video_path)
+                vals[4] = os.path.basename(sub_path) if sub_path else "—"
+            else:
+                vals[4] = ""
+            self.tree.item(item, values=tuple(vals))
+
+    def _auto_match_all(self) -> None:
+        sub_extensions = [".ass", ".srt", ".ssa", ".vtt", ".sup"]
+        self._external_subs.clear()
+        for f in self._files:
+            video_path = Path(f)
+            video_dir = video_path.parent
+            stem = video_path.stem
+            matched: str | None = None
+            for ext in sub_extensions:
+                candidate = video_dir / f"{stem}{ext}"
+                if candidate.exists():
+                    matched = str(candidate)
+                    break
+            self._external_subs[f] = matched
+
+    def _auto_match_one(self, video_path: str) -> str | None:
+        sub_extensions = [".ass", ".srt", ".ssa", ".vtt", ".sup"]
+        vp = Path(video_path)
+        d = vp.parent
+        stem = vp.stem
+        for ext in sub_extensions:
+            candidate = d / f"{stem}{ext}"
+            if candidate.exists():
+                self._external_subs[video_path] = str(candidate)
+                return str(candidate)
+        self._external_subs[video_path] = None
+        return None
+
+    def _choose_external_sub(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showinfo("burn-subs", "Select a file in the list first.")
+            return
+        item = selection[0]
+        vals = self.tree.item(item, "values")
+        video_path = vals[1]
+        sub_path = filedialog.askopenfilename(
+            title="Select subtitle file",
+            filetypes=[
+                ("Subtitle files", "*.srt *.ass *.ssa *.vtt *.sup *.idx *.sub"),
+                ("All files", "*.*"),
+            ],
+        )
+        if sub_path:
+            self._external_subs[video_path] = sub_path
+            self._update_tree_sub_columns()
+
+    def _clear_external_sub(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showinfo("burn-subs", "Select a file in the list first.")
+            return
+        item = selection[0]
+        vals = self.tree.item(item, "values")
+        video_path = vals[1]
+        self._external_subs.pop(video_path, None)
+        self._auto_match_one(video_path)
+        self._update_tree_sub_columns()
+
     # ====================== File & Stream Handling ======================
 
     def _check_ffmpeg_capabilities(self) -> None:
@@ -250,7 +372,12 @@ class App(tk.Tk):
             return
         for p in new_paths:
             self._files.append(p)
-            self.tree.insert("", "end", values=("PENDING", p, "", ""))
+            sub_display = ""
+            if self.external_subs_var.get():
+                self._auto_match_one(p)
+                sub_path = self._external_subs.get(p)
+                sub_display = os.path.basename(sub_path) if sub_path else "—"
+            self.tree.insert("", "end", values=("PENDING", p, "", "", sub_display))
         self._set_smart_output_dir(self._files[0])
         self._load_stream_choices_from_first_file(self._files[0])
         self.progress_var.set(f"Selected files: {len(self._files)}")
@@ -269,7 +396,12 @@ class App(tk.Tk):
         for p in paths:
             if p not in self._files:
                 self._files.append(p)
-                self.tree.insert("", "end", values=("PENDING", p, "", ""))
+                sub_display = ""
+                if self.external_subs_var.get():
+                    self._auto_match_one(p)
+                    sub_path = self._external_subs.get(p)
+                    sub_display = os.path.basename(sub_path) if sub_path else "—"
+                self.tree.insert("", "end", values=("PENDING", p, "", "", sub_display))
 
         if self._files:
             self._set_smart_output_dir(self._files[0])
@@ -279,6 +411,7 @@ class App(tk.Tk):
 
     def _clear_files(self) -> None:
         self._files.clear()
+        self._external_subs.clear()
         for item in self.tree.get_children():
             self.tree.delete(item)
         self._set_default_stream_dropdowns()
@@ -401,13 +534,14 @@ class App(tk.Tk):
         self._clear_log()
         self._append_to_log("Starting conversion...\n\n")
 
+        external_subs = dict(self._external_subs) if self.external_subs_var.get() else None
         options = BurnOptions(
             subtitle_stream_index=None if self.no_subs_var.get() else self._selected_subtitle_index(),
             audio_index=self._selected_audio_index(),
             overwrite=bool(self.overwrite_var.get()),
             target_height=self._selected_target_height(),
         )
-        job = _Job(files=list(self._files), output_dir=output_dir, options=options)
+        job = _Job(files=list(self._files), output_dir=output_dir, options=options, external_subs=external_subs)
 
         self.run_btn.configure(state="disabled")
         self.progress_var.set("Running… (see log below)")
@@ -435,7 +569,8 @@ class App(tk.Tk):
                 job.files,
                 output_dir=job.output_dir,
                 options=job.options,
-                log_callback=log_cb
+                log_callback=log_cb,
+                external_subs=job.external_subs,
             )
             for r in results:
                 self._result_queue.put(r)
@@ -475,7 +610,8 @@ class App(tk.Tk):
                 status = "OK" if r.ok else "FAIL"
                 method = r.method or ""
                 out = r.output_file or ""
-                self.tree.item(item, values=(status, r.input_file, out, method))
+                sub = vals[4] if len(vals) > 4 else ""
+                self.tree.item(item, values=(status, r.input_file, out, method, sub))
                 break
 
     def _show_summary(self) -> None:

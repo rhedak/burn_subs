@@ -38,6 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--overwrite", action="store_true", help="Overwrite output files if they exist")
     p.add_argument("--height", type=int, default=None, metavar="PX",
                    help="Scale output to this height in pixels (e.g. 720 for 720p). Width is set automatically to preserve aspect ratio. Default: keep original resolution.")
+    p.add_argument("--external-sub", type=str, default=None, metavar="FILE",
+                   help="Path to an external subtitle file (.srt, .ass, .sup, etc.). Overrides the embedded --subtitle-index.")
     return p
 
 
@@ -53,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         audio_index=args.audio_index,
         overwrite=args.overwrite,
         target_height=args.height,
+        external_subtitle_file=args.external_sub,
     )
 
     results = convert_files(files, output_dir=args.output_dir, options=options)
